@@ -2,7 +2,7 @@ from enum import Enum
 from dataclasses import dataclass
 
 
-@dataclass
+@dataclass(slots=True)
 class JQLFilter:
     description: str
     content: str

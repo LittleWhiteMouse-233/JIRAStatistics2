@@ -2,10 +2,12 @@ from abc import abstractmethod, ABC
 import jira.resources as jira_res
 import pandas as pd
 from datetime import datetime
-from typing import Callable, Any
+from typing import Callable, Any, TypeVar
 from . import fieldStructure as fieldsS
 from . import exceptions as exc
 from . import utils
+
+_F = TypeVar('_F')
 
 
 # 事务核心字段
@@ -14,9 +16,9 @@ class IssueLike:
         self.id = issue_obj.id
         self.key = issue_obj.key
         fields_obj = issue_obj.fields
-        self.issueType = fieldsS.IssueType(fields_obj.issuetype)
-        self.priority = fieldsS.Priority(fields_obj.priority)
-        self.workflowStatus = fieldsS.WorkflowStatus(fields_obj.status)
+        self.issueType = fieldsS.IssueType.init_obj(fields_obj.issuetype)
+        self.priority = fieldsS.Priority.init_obj(fields_obj.priority)
+        self.workflowStatus = fieldsS.WorkflowStatus.init_obj(fields_obj.status)
         self.summary = utils.clean_string(fields_obj.summary)
 
 
@@ -25,18 +27,18 @@ class Issue(IssueLike):
     def __init__(self, issue_obj: jira_res.Issue, ref_fields: fieldsS.FieldList):
         super().__init__(issue_obj)
         fields_obj = issue_obj.fields
-        self.belongingProject = fieldsS.Project(fields_obj.project)
+        self.belongingProject = fieldsS.Project.init_obj(fields_obj.project)
         description = fields_obj.description
         if description:
             self.description = utils.clean_string(description)
         else:
             self.description = ''
         # 用户类字段
-        self.reporter = fieldsS.User(issue_obj.get_field('reporter'))
-        self.creator = fieldsS.User(issue_obj.get_field('creator'))
+        self.reporter = fieldsS.User.init_obj(issue_obj.get_field('reporter'))
+        self.creator = fieldsS.User.init_obj(issue_obj.get_field('creator'))
         assignee = issue_obj.get_field('assignee')
         if assignee:
-            self.assignee = fieldsS.User(assignee)
+            self.assignee = fieldsS.User.init_obj(assignee)
         else:
             self.assignee = None
         # 时间类字段
@@ -46,26 +48,26 @@ class Issue(IssueLike):
         self.labels = fields_obj.labels
         self.components: list[fieldsS.Component] = []
         for component in issue_obj.get_field('components'):
-            self.components.append(fieldsS.Component(component))
+            self.components.append(fieldsS.Component.init_obj(component))
         # 评论列表
         self.comments = []
         for comment in fields_obj.comment.comments:
-            self.comments.append(fieldsS.Comment(comment))
+            self.comments.append(fieldsS.Comment.init_obj(comment))
         # 工作日志
         self.worklogs = []
         for worklog in fields_obj.worklog.worklogs:
-            self.worklogs.append(fieldsS.Worklog(worklog))
+            self.worklogs.append(fieldsS.Worklog.init_obj(worklog))
         # 子任务
         self.subtasks = []
         for subtask in issue_obj.get_field('subtasks'):
             self.subtasks.append(IssueLike(subtask))
         # 自定义字段
-        self.base_platform: fieldsS.OptionValue = self.try_get_field(issue_obj, ref_fields.field_name2id('基础机芯&OS'),
-                                                                     fieldsS.OptionValue)
+        self.base_platform = self.try_get_field(issue_obj, ref_fields.field_name2id('基础机芯&OS'),
+                                                fieldsS.OptionValue.init_obj)
         ## str or None
-        self.other_platform: str = self.try_get_field(issue_obj, ref_fields.field_name2id('项目（其他）'), str)
-        self.task_type: fieldsS.MultOptionValue = self.try_get_field(issue_obj, ref_fields.field_name2id('任务类型'),
-                                                                     fieldsS.MultOptionValue)
+        self.other_platform = self.try_get_field(issue_obj, ref_fields.field_name2id('项目（其他）'), str)
+        self.task_type = self.try_get_field(issue_obj, ref_fields.field_name2id('任务类型'),
+                                            fieldsS.MultOptionValue.init_obj)
 
     @classmethod
     def auto_adapt(cls, issue_obj: jira_res.Issue, ref_fields: fieldsS.FieldList):
@@ -84,7 +86,7 @@ class Issue(IssueLike):
             return cls(issue_obj, ref_fields)
 
     @staticmethod
-    def try_get_field(issue_obj: jira_res.Issue, field_name: str, class_type: type):
+    def try_get_field(issue_obj: jira_res.Issue, field_name: str, instance_func: Callable[[Any], _F]):
         try:
             field_obj = issue_obj.get_field(field_name)
         except AttributeError:
@@ -92,7 +94,7 @@ class Issue(IssueLike):
         if field_obj is None:
             return None
         else:
-            return class_type(field_obj)
+            return instance_func(field_obj)
 
     def get_attribute(self, attr_name: str):
         if attr_name not in self.__dict__.keys():
@@ -133,7 +135,10 @@ class Issue(IssueLike):
         if self.base_platform is None or self.base_platform.value == 'Other':
             return self.other_platform
         else:
-            return self.base_platform.value
+            if self.other_platform is not None:
+                return self.base_platform.value + self.other_platform
+            else:
+                return self.base_platform.value
 
     @property
     def info_string(self):
@@ -177,8 +182,8 @@ class Epic(Issue):
         self.epic_name = issue_obj.get_field(ref_fields.field_name2id('Epic Name'))
         # 自定义字段
         ## 级联列表
-        self.certification: fieldsS.MultOptionValue = self.try_get_field(issue_obj, ref_fields.field_name2id('认证项'),
-                                                                         fieldsS.MultOptionValue)
+        self.certification = self.try_get_field(issue_obj, ref_fields.field_name2id('认证项'),
+                                                fieldsS.MultOptionValue.init_obj)
 
     @property
     def certification_string(self):
@@ -360,7 +365,7 @@ class IssueList(list[Issue]):
         comments_table.reset_index(drop=True, inplace=True)
         return comments_table
 
-    def __listing_attribute(self, func: Callable[[Issue], str], assert_unique=False):
+    def __listing_attribute(self, func: Callable[[Issue], str], assert_unique=True):
         attr_list = list(map(func, self))
         if assert_unique:
             assert len(attr_list) == len(set(attr_list))

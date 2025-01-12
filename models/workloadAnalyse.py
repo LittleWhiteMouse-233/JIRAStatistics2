@@ -1,8 +1,11 @@
-import openpyxl
+from typing import Callable
+from openpyxl import load_workbook, Workbook
 from openpyxl.worksheet.worksheet import Worksheet
 import pandas as pd
 import numpy as np
+from matplotlib.colors import LinearSegmentedColormap
 from enum import Enum
+# from copy import deepcopy
 from . import issueData as issueD
 from . import fieldStructure as fieldS
 from . import exceptions as exc
@@ -59,6 +62,14 @@ class Workload:
     def belong_issue_key(self):
         return self.__issue.key
 
+    @property
+    def person_hour(self):
+        return self.__rate * self.__worklog.timeSpentSeconds / 3600
+
+    @property
+    def person_day(self):
+        return self.person_hour / 8
+
     def is_empty(self):
         return type(self.__worklog) is self.__EmptyWorklog
 
@@ -70,20 +81,35 @@ class Workload:
             self.project.name,
             self.__worklog.created_author.displayName,
             self.__worklog.comment,
-            self.__worklog.timeSpentSeconds,
+            self.__worklog.timeSpentSeconds / 3600,
             self.__rate,
         ])
 
 
 class ReferenceMap:
+    COLORMAP = LinearSegmentedColormap.from_list("custom", [(0, 1, 0), (1, 1, 0), (1, 0, 0)])
+
     def __init__(self, worksheet: Worksheet, origin_point_rc: tuple[int, int]):
         # 输入值为坐标重叠域右下交点的自然行列坐标，对应值域左上起点的零点行列坐标
+        self.__origin_ws = worksheet
         self.__op_r, self.__op_c = origin_point_rc
-        self.__name = worksheet.title
-        filled_sheet = WorksheetProcessor(worksheet).unmerge_cells_and_fill(fill=True)
-        self.__map = pd.DataFrame(filled_sheet.values)
-        self.__map.dropna(axis=0, how='all', inplace=True)
-        self.__map.dropna(axis=1, how='all', inplace=True)
+        ws = WorksheetProcessor(worksheet).copy_into(Workbook().active)
+        unmerged_sheet = WorksheetProcessor(ws).unmerge_cells_and_fill(fill=True)
+        # unmerged_sheet = WorksheetProcessor(deepcopy(worksheet)).unmerge_cells_and_fill(fill=True)
+        table = pd.DataFrame(unmerged_sheet.values)
+        table.dropna(axis=0, how='all', inplace=True)
+        table.dropna(axis=1, how='all', inplace=True)
+        self.__value_map = self.__reset_rc(table.iloc[self.__op_r:, self.__op_c:])
+        self.__axis_x: pd.DataFrame = self.__reset_rc(table.iloc[:self.__op_r, self.__op_c:])
+        self.__axis_y: pd.DataFrame = self.__reset_rc(table.iloc[self.__op_r:, :self.__op_c])
+
+    @staticmethod
+    def __reset_rc(df: pd.DataFrame, row=True, col=True, row_drop=True, col_drop=True):
+        if row:
+            df = df.reset_index(drop=row_drop)
+        if col:
+            df = df.T.reset_index(drop=col_drop).T
+        return df
 
     @property
     def __level_x(self):
@@ -94,26 +120,22 @@ class ReferenceMap:
         return self.__op_c
 
     @property
-    def __value_map(self):
-        return self.__map.iloc[self.__op_r:, self.__op_c:].reset_index(drop=True).T.reset_index(drop=True).T
-
-    @property
     def value_shape(self):
-        return self.__map.shape[0] - self.__op_r, self.__map.shape[1] - self.__op_c
+        return self.__value_map.shape
 
     @property
     def worksheet_name(self):
-        return self.__name
+        return self.__origin_ws.title
 
     def __locate_coord_value(self, value: str, level: int, axis: int):
         if axis == 0:
             if level > self.__level_x:
                 raise ValueError("The level(%d) is over than level-num of x axis(%d)." % (level, self.__level_x))
-            return self.__map.iloc[level - 1, self.__level_y:].eq(value)
+            return self.__axis_x.iloc[level - 1, :].eq(value)
         elif axis == 1:
             if level > self.__level_y:
                 raise ValueError("The level(%d) is over than level-num of y axis(%d)." % (level, self.__level_y))
-            return self.__map.iloc[self.__level_x:, level - 1].eq(value)
+            return self.__axis_y.iloc[:, level - 1].eq(value)
         else:
             raise ValueError("The axis should be 0 or 1, but get %d." % axis)
 
@@ -151,25 +173,46 @@ class ReferenceMap:
             raise exc.NoMatchingError(coord)
         if located.size != 1:
             raise exc.ManyMatchingError(coord)
-        if pd.isna(located.iloc[0, 0]):
+        located_value = pd.to_numeric(located.iloc[0, 0], errors='coerce')
+        if pd.isna(located_value):
             raise exc.MatchingNAError(coord)
         return located
 
     @staticmethod
     def cell2value(located: pd.DataFrame):
-        return located.iloc[0, 0]
+        return pd.to_numeric(located.iloc[0, 0])
 
     @staticmethod
     def cell2index(located: pd.DataFrame):
         return int(located.index[0]), int(located.columns[0])
 
-    def value_map2table(self, value_map: np.ndarray):
-        value_table = pd.DataFrame(value_map)
-        table_x = self.__map.iloc[:self.__level_x, self.__level_y:].T.reset_index(drop=True).T
-        value_x = pd.concat([table_x, value_table]).reset_index(drop=True)
-        table_y = self.__map.iloc[:, :self.__level_y]
-        value_xy = pd.concat([table_y, value_x], axis=1)
-        return value_xy
+    @classmethod
+    def __color_picker(cls, scale: float):
+        r, g, b, _ = cls.COLORMAP(scale, bytes=True)
+        return '%06x' % ((int(r) << 16) + (int(g) << 8) + int(b))
+
+    def value_array2sheet(self, value_array: np.ndarray):
+        if value_array.shape != self.value_shape:
+            raise ValueError("The shape of value_array(%s) is wrong, it shall be: %s)."
+                             % value_array.shape, self.value_shape)
+        max_value = value_array.max()
+        min_value = value_array.min()
+        worksheet = WorksheetProcessor(self.__origin_ws).copy_into(Workbook().active)
+        renderer = WorksheetProcessor(worksheet)
+        row, col = value_array.shape
+        for i in range(row):
+            for j in range(col):
+                value = value_array[i][j]
+                if value == 0:
+                    # value = ''
+                    color = 'D0D0D0'
+                else:
+                    color = self.__color_picker((value - min_value) / (max_value - min_value))
+                ws_i = i + self.__level_x + 1
+                ws_j = j + self.__level_y + 1
+                worksheet.cell(ws_i, ws_j).value = value
+                renderer.setting_fill_color(ws_i, ws_j, color)
+        return worksheet
 
 
 class Cell:
@@ -201,6 +244,10 @@ class Cell:
         return self.__r1, self.__r2, self.__c1, self.__c2
 
     @property
+    def coord_index(self):
+        return self.__value_index
+
+    @property
     def num_worklog(self):
         return len(self.__workloads)
 
@@ -208,9 +255,13 @@ class Cell:
     def num_issues(self):
         return len(set(map(lambda x: x.belong_issue_key, self.__workloads)))
 
-    @property
-    def value_index(self):
-        return self.__value_index
+    def cumulative_workload(self, unit='day'):
+        if unit == 'day':
+            return sum(map(lambda x: x.person_day, self.__workloads))
+        elif unit == 'hour':
+            return sum(map(lambda x: x.person_hour, self.__workloads))
+        else:
+            raise ValueError("Wrong unit: %s." % unit)
 
     def refer_from(self, ref_map: ReferenceMap):
         if ref_map is self.__ref_map or ref_map.worksheet_name == self.__ref_map.worksheet_name:
@@ -227,7 +278,7 @@ class Cell:
                                           left=[self.coord_string],
                                           repeat=True,
                                           columns=['coordinate', 'issue', 'task', 'epic', 'project',
-                                                   'creator', 'comment', 'time(sec)', 'rate'])
+                                                   'creator', 'comment', 'time(hour)', 'rate'])
         return table
 
 
@@ -241,11 +292,11 @@ class Matrix:
             self.res_id = result_id
             self.res_name = result_name
 
-    class __IssueRecord:
+    class __MetaData:
         def __init__(self, issue: issueD.Issue | issueD.TaskLike):
             self.__issue = issue
-            self.__result = None
-            self.__detail = None
+            self.__load_result = None
+            self.___load_detail = None
             self.ref_class = type(issue)
 
         @property
@@ -253,46 +304,46 @@ class Matrix:
             return self.__issue
 
         @property
-        def result(self):
-            return self.__result
+        def load_result(self):
+            return self.__load_result
 
         @property
-        def detail(self):
-            return self.__detail
+        def load_detail(self):
+            return self.___load_detail
 
         def skip(self, detail: str = None):
-            self.__result = Matrix.LoadResult.SKIP
-            self.__detail = detail
+            self.__load_result = Matrix.LoadResult.SKIP
+            self.___load_detail = detail
 
         def success(self, detail: str = None):
-            self.__result = Matrix.LoadResult.SUCCESS
-            self.__detail = detail
+            self.__load_result = Matrix.LoadResult.SUCCESS
+            self.___load_detail = detail
 
         def wrong(self, detail: str = None):
-            self.__result = Matrix.LoadResult.WRONG
-            self.__detail = detail
+            self.__load_result = Matrix.LoadResult.WRONG
+            self.___load_detail = detail
 
     def __init__(self, issues: issueD.IssueList, jira_op: JIRAOperator, ref_filename: str):
         jira_op.add_cache(issues)
         self.__jira_op = jira_op
-        ref_xlsx = openpyxl.load_workbook(ref_filename)
+        ref_xlsx = load_workbook(ref_filename)
         self.__ref_test = ReferenceMap(ref_xlsx.worksheets[0], (2, 3))
         self.__ref_manage = ReferenceMap(ref_xlsx.worksheets[1], (2, 3))
-        self.__records: list[Matrix.__IssueRecord] = []
+        self.__meta_datas: list[Matrix.__MetaData] = []
         self.__cells: list[Cell] = []
         for issue in issues:
-            self.__records.append(self.__IssueRecord(issue))
-        for i_r in self.__records:
-            issue = i_r.issue
+            self.__meta_datas.append(self.__MetaData(issue))
+        for metadata in self.__meta_datas:
+            issue = metadata.issue
             # 非类任务型
             if not issubclass(type(issue), issueD.TaskLike):
-                i_r.skip("Is not subclass of TaskLike: %s." % issue.issueType.name)
+                metadata.skip("Is not subclass of TaskLike: %s." % issue.issueType.name)
                 continue
             index = issues.self_search_by(issue.parent_key, return_index=True)
             # 排除存在子任务的父任务
             if index is not None:
-                i_r_p = self.__records[index]
-                i_r_p.skip("This issue is parent of: %s." % i_r.issue.key)
+                md_p = self.__meta_datas[index]
+                md_p.skip("This issue is parent of: %s." % metadata.issue.key)
         self.load_workload_into_cell()
 
     @staticmethod
@@ -313,12 +364,12 @@ class Matrix:
                         j2: str
                         yield i1, i2, j1, j2
 
-    def __analyse_coordinate(self, issue_record: __IssueRecord):
-        task_like = issue_record.issue
+    def __analyse_coordinate(self, metadata: __MetaData):
+        task_like = metadata.issue
         # 查找父事务
         task, epic = self.__jira_op.find_parents(task_like)
         if type(task_like) is issueD.Subtask and issubclass(type(task), issueD.TaskLike):
-            issue_record.ref_class = type(task)
+            metadata.ref_class = type(task)
         # 生成坐标（集合）
         coord = task_like.generate_coordinate(epic, task=task)
         # 拆分坐标集合（例如“模块”字段），构建坐标生成器
@@ -327,32 +378,32 @@ class Matrix:
 
     def load_workload_into_cell(self):
         print("Loading workload into cell ...")
-        for i_r in self.__records:
-            if i_r.result is self.LoadResult.SKIP:
+        for metadata in self.__meta_datas:
+            if metadata.load_result is self.LoadResult.SKIP:
                 continue
             try:
-                coord_generator = self.__analyse_coordinate(i_r)
+                coord_generator = self.__analyse_coordinate(metadata)
             # 找不到父级事务
             except exc.GetIssueFailedError as e:
-                i_r.wrong("%s(TaskLike.parent_key=%s)." % (e, i_r.issue.parent_key))
+                metadata.wrong("%s(TaskLike.parent_key=%s)." % (e, metadata.issue.parent_key))
                 continue
             # 坐标获取异常
             except exc.CoordinateError as e:
-                i_r.wrong(str(e))
+                metadata.wrong(str(e))
                 continue
             cell_list = []
             try:
                 for coord in coord_generator:
-                    cell = self.__find_cell_or_create(coord, i_r.ref_class)
+                    cell = self.__find_cell_or_create(coord, metadata.ref_class)
                     cell_list.append(cell)
             # 匹配坐标（集合）失败
             except exc.MisMatchingError as e:
-                i_r.wrong(str(e))
+                metadata.wrong(str(e))
                 continue
             for cell in cell_list:
-                cell.add_workload(i_r.issue, self.__jira_op, 1 / len(cell_list))
-            i_r.success("Coordinate(s): " + ' & '.join([cell.coord_string for cell in cell_list]))
-        assert len(self.__records) == sum(self.__num_of(res) for res in self.LoadResult)
+                cell.add_workload(metadata.issue, self.__jira_op, 1 / len(cell_list))
+            metadata.success("Coordinate(s): " + ' & '.join([cell.coord_string for cell in cell_list]))
+        assert len(self.__meta_datas) == sum(self.__num_of(res) for res in self.LoadResult)
         print("Loading issue completed.\n")
 
     def __find_cell_or_create(self, ref_coord: tuple[str, str, str, str], ref_class: type):
@@ -378,40 +429,70 @@ class Matrix:
         return new_cell
 
     def export_worklog_table(self):
+        print("Exporting worklog table ...")
         concat_list = []
         for cell in self.__cells:
             concat_list.append(cell.get_worklog_table())
         table = pd.concat(concat_list).reset_index(drop=True)
         table.sort_values(by=list(table.columns[[0, 1, 4]]), inplace=True)
+        print("Exporting worklog table completed.\n")
         return table
 
     def __num_of(self, res: LoadResult):
-        return sum(map(lambda x: x.result is res, self.__records))
+        return sum(map(lambda x: x.load_result is res, self.__meta_datas))
 
-    def running_report(self, show_detail=True):
-        print("Run report: ")
+    def meta_data_loading_report(self, show_detail=True):
+        print("Loading report: ")
         if show_detail:
             for res in self.LoadResult:
                 print("\t%s(%s): " % (res.res_name, self.__num_of(res)))
-                for rec in self.__records:
-                    if rec.result is res:
-                        print(utils.specific_length_string(rec.issue.info_string), rec.detail)
-        print('Total: %d' % len(self.__records), end=', ')
-        print(', '.join(map(lambda x: '%s: %d' % (x.res_name, self.__num_of(x)), self.LoadResult)))
+                for metadata in self.__meta_datas:
+                    if metadata.load_result is res:
+                        print(utils.specific_length_string(metadata.issue.info_string), metadata.load_detail)
+        print('Total: %d' % len(self.__meta_datas), end=', ')
+        print(', '.join(map(lambda x: '%s: %d' % (x.res_name, self.__num_of(x)), self.LoadResult)) + '\n')
 
-    def __build_count_matrix(self, ref_map: ReferenceMap):
+    def __build_matrix_base_on(self, ref_map: ReferenceMap, cell_property: Callable[[Cell], int | float]):
         array = np.zeros(ref_map.value_shape)
         for cell in self.__cells:
             if not cell.refer_from(ref_map):
                 continue
-            row_index, col_index = cell.value_index
-            array[row_index][col_index] = cell.num_issues
+            row_index, col_index = cell.coord_index
+            array[row_index][col_index] = cell_property(cell)
         return array
 
-    def export_count_matrix(self, ref_map: ReferenceMap):
-        value_map = self.__build_count_matrix(ref_map)
-        value_table = ref_map.value_map2table(value_map)
-        return value_table
+    def __synthesize_count_sheet(self, ref_map: ReferenceMap):
+        value_array = self.__build_matrix_base_on(ref_map, lambda x: x.num_issues)
+        count_ws = ref_map.value_array2sheet(value_array)
+        count_ws.cell(1, 1).value = "Count of %s" % ref_map.worksheet_name
+        return count_ws
 
-    def export_workload_matrix(self):
-        pass
+    def __synthesize_workload_sheet(self, ref_map: ReferenceMap, unit='day'):
+        value_array = self.__build_matrix_base_on(ref_map, lambda x: x.cumulative_workload(unit=unit))
+        workload_ws = ref_map.value_array2sheet(value_array)
+        workload_ws.cell(1, 1).value = "Cumulative workload of %s(person·%s)" % (ref_map.worksheet_name, unit)
+        return workload_ws
+
+    def export_matrix_workbook(self):
+        print("Exporting matrix workbook ...")
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = 'Count of Test'
+        # 测试计数
+        print("Building count matrix and synthesizing with ref_test style ...")
+        test_count = self.__synthesize_count_sheet(self.__ref_test)
+        WorksheetProcessor(test_count).copy_into(worksheet)
+        # 测试计时
+        print("Building workload matrix and synthesizing with ref_test style ...")
+        test_workload = self.__synthesize_workload_sheet(self.__ref_test)
+        WorksheetProcessor(test_workload).copy_into(workbook.create_sheet('Time of Test'))
+        # 管理计数
+        print("Building count matrix and synthesizing with ref_manage style ...")
+        manage_count = self.__synthesize_count_sheet(self.__ref_manage)
+        WorksheetProcessor(manage_count).copy_into(workbook.create_sheet('Count of Manage'))
+        # 管理计时
+        print("Building workload matrix and synthesizing with ref_manage style ...")
+        manage_workload = self.__synthesize_workload_sheet(self.__ref_manage)
+        WorksheetProcessor(manage_workload).copy_into(workbook.create_sheet('Time of Manage'))
+        print("Exporting matrix workbook completed\n")
+        return workbook

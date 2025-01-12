@@ -51,4 +51,4 @@ class ManyMatchingError(MisMatchingError):
 
 class MatchingNAError(MisMatchingError):
     def __init__(self, coord: tuple = None):
-        super().__init__(coord, "The coordinates match but the value is nan.")
+        super().__init__(coord, "The coordinates match but the value is nan")

@@ -62,7 +62,7 @@ class JIRAOperator:
         return self.__fields
 
     @property
-    def run_num_log(self):
+    def call_num_log(self):
         return str(self.__num_dict)
 
     def add_cache(self, issue_list: list[issueD.Issue]):

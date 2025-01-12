@@ -1,11 +1,20 @@
 import re
-from typing import Callable
+from typing import Callable, Any
+from openpyxl import Workbook
 from openpyxl.worksheet.worksheet import Worksheet
 from openpyxl.styles import Border, Side, PatternFill
 from copy import copy
 
 
 class WorksheetProcessor:
+    ALIGNMENT_HORIZONTAL = ['general', 'left', 'center', 'right', 'fill', 'justify', 'centerContinuous', 'distributed']
+    ALIGNMENT_VERTICAL = ['top', 'center', 'bottom', 'justify', 'distributed']
+    BORDER_STYLE = ["dashDot", "dashDotDot", "dashed", "dotted", "double", "hair", "medium", "mediumDashDot",
+                    "mediumDashDotDot", "mediumDashed", "slantDashDot", "thick", "thin", "none"]
+    FILL_TYPE = ["solid", "darkDown", "darkGray", "darkGrid", "darkHorizontal", "darkTrellis", "darkUp", "darkVertical",
+                 "gray0625", "gray125", "lightDown", "lightGray", "lightGrid", "lightHorizontal", "lightTrellis",
+                 "lightUp", "lightVertical", "mediumGray", "none"]
+
     def __init__(self, worksheet: Worksheet):
         self.__ws = worksheet
 
@@ -165,6 +174,72 @@ class WorksheetProcessor:
                         self.__ws.cell(i, j).value = self.__ws.cell(min_row, min_col).value
         return self.__ws
 
+    # 向 workbook 复制 worksheet(refer to Workbook.copy_worksheet())
+    def _copy_into(self, target_ws: Worksheet):
+        if type(target_ws) is not Worksheet:
+            raise TypeError("The type of target should be Worksheet.")
+        if target_ws is self.__ws:
+            raise ValueError("The target should not be itself.")
+        target_wb: Workbook = target_ws.parent
+        if target_wb is not self.__ws.parent:
+            source_wb: Workbook = self.__ws.parent
+            target_wb._fonts = getattr(source_wb, '_fonts')
+            target_wb._fills = getattr(source_wb, '_fills')
+            target_wb._borders = getattr(source_wb, '_borders')
+            target_wb._alignments = getattr(source_wb, '_alignments')
+        for i in range(1, self.max_row + 1):
+            for j in range(1, self.max_col + 1):
+                from_cell = self.__ws.cell(i, j)
+                to_cell = target_ws.cell(i, j)
+                # target_cell._value = source_cell._value
+                to_cell.value = from_cell.value
+                to_cell.data_type = from_cell.data_type
+                if from_cell.has_style:
+                    # target_cell._style = copy(source_cell._style)
+                    to_cell._style = copy(getattr(from_cell, '_style'))
+                if from_cell.hyperlink:
+                    # target_cell._hyperlink = copy(source_cell.hyperlink)
+                    to_cell.hyperlink = copy(from_cell.hyperlink)
+                if from_cell.comment:
+                    to_cell.comment = copy(from_cell.comment)
+        for attr in ('row_dimensions', 'column_dimensions'):
+            from_dim = getattr(self.__ws, attr)
+            to_dim = getattr(target_ws, attr)
+            for key, dim in from_dim.items():
+                to_dim[key] = copy(dim)
+                to_dim[key].worksheet = target_ws
+        target_ws.sheet_format = copy(self.__ws.sheet_format)
+        target_ws.sheet_properties = copy(self.__ws.sheet_properties)
+        target_ws.merged_cells = copy(self.__ws.merged_cells)
+        target_ws.page_margins = copy(self.__ws.page_margins)
+        target_ws.page_setup = copy(self.__ws.page_setup)
+        target_ws.print_options = copy(self.__ws.print_options)
+        # target_ws._images = self.__ws._images
+        return target_ws
+
+    # 向 workbook 复制 worksheet
+    def copy_into(self, target_ws: Worksheet):
+        if type(target_ws) is not Worksheet:
+            raise TypeError("The type of target should be Worksheet.")
+        if target_ws is self.__ws:
+            raise ValueError("The target should not be itself.")
+        for i in range(1, self.max_row + 1):
+            for j in range(1, self.max_col + 1):
+                src_cell = self.__ws.cell(i, j)
+                tar_cell = target_ws.cell(i, j)
+                tar_cell.value = src_cell.value
+                if src_cell.has_style:
+                    tar_cell.alignment = copy(src_cell.alignment)
+                    tar_cell.border = copy(src_cell.border)
+                    tar_cell.fill = copy(src_cell.fill)
+                    tar_cell.font = copy(src_cell.font)
+        for key, dim in self.__ws.row_dimensions.items():
+            target_ws.row_dimensions[key].height = dim.height
+        for key, dim in self.__ws.column_dimensions.items():
+            target_ws.column_dimensions[key].width = dim.width
+        target_ws.merged_cells = copy(self.__ws.merged_cells)
+        return target_ws
+
     # 批量设置单元格
     def batch_set(self, func: Callable, scope='', col_list: list = None, **kwargs):
         if col_list:
@@ -179,13 +254,11 @@ class WorksheetProcessor:
                 func(i, j, **kwargs)
 
     # 设置单元格文本对齐
-    def setting_text_alignment(self, row, col, horizontal='left', vertical='center'):
-        excepted_h = ['general', 'left', 'center', 'right', 'fill', 'justify', 'centerContinuous', 'distributed']
-        excepted_v = ['top', 'center', 'bottom', 'justify', 'distributed']
-        if horizontal not in excepted_h:
-            raise ValueError("Invalid horizontal: " + str(horizontal) + ', excepted input: ' + str(excepted_h))
-        if vertical not in excepted_v:
-            raise ValueError("Invalid vertical: " + str(vertical) + ', excepted input: ' + str(excepted_v))
+    def setting_text_alignment(self, row: int, col: int, horizontal='left', vertical='center'):
+        if horizontal not in self.ALIGNMENT_HORIZONTAL:
+            raise ValueError("Invalid horizontal: %s, excepted input: %s." % (horizontal, self.ALIGNMENT_HORIZONTAL))
+        if vertical not in self.ALIGNMENT_VERTICAL:
+            raise ValueError("Invalid vertical: %s, excepted input: %s." % (vertical, self.ALIGNMENT_VERTICAL))
         align = self.__ws.cell(row, col).alignment
         if align.horizontal != horizontal or align.vertical != vertical:
             align_new = copy(align)
@@ -196,7 +269,7 @@ class WorksheetProcessor:
             self.__ws.cell(row, col).alignment = align_new
 
     # 设置单元格文本自动换行
-    def setting_word_wrap(self, row, col):
+    def setting_word_wrap(self, row: int, col: int):
         align = self.__ws.cell(row, col).alignment
         if not align.wrapText:
             align_new = copy(align)
@@ -204,34 +277,45 @@ class WorksheetProcessor:
             self.__ws.cell(row, col).alignment = align_new
 
     # 设置单元格边框
-    def setting_cell_border(self, row, col, border_style='thin'):
-        excepted_style = ["dashDot", "dashDotDot", "dashed", "dotted", "double", "hair", "medium", "mediumDashDot",
-                          "mediumDashDotDot", "mediumDashed", "slantDashDot", "thick", "thin", "none"]
-        if border_style not in excepted_style:
-            raise ValueError("Invalid border_style: %s, excepted input: %s" % (border_style, excepted_style))
+    def setting_cell_border(self, row: int, col: int, border_style='thin'):
+        if border_style not in self.BORDER_STYLE:
+            raise ValueError("Invalid border_style: %s, excepted input: %s" % (border_style, self.BORDER_STYLE))
         self.__ws.cell(row, col).border = Border(left=Side(border_style=border_style, color='FF000000'),
                                                  right=Side(border_style=border_style, color='FF000000'),
                                                  top=Side(border_style=border_style, color='FF000000'),
                                                  bottom=Side(border_style=border_style, color='FF000000'))
 
     # 设置单元格颜色
-    def setting_fill_color(self, row, col, re_pattern: re.Pattern, fill_type='solid'):
-        excepted_type = ["solid", "darkDown", "darkGray", "darkGrid", "darkHorizontal", "darkTrellis", "darkUp",
-                         "darkVertical", "gray0625", "gray125", "lightDown", "lightGray", "lightGrid",
-                         "lightHorizontal", "lightTrellis", "lightUp", "lightVertical", "mediumGray", "none"]
-        if fill_type not in excepted_type:
-            raise ValueError("Invalid fill_type: %s, excepted input: %s" % (fill_type, excepted_type))
-        type_index = excepted_type.index(fill_type)
+    def setting_fill_color(self, row: int, col: int, color: str, fill_type='solid'):
+        if fill_type not in self.FILL_TYPE:
+            raise ValueError("Invalid fill_type: %s, excepted input: %s" % (fill_type, self.FILL_TYPE))
+        type_index = self.FILL_TYPE.index(fill_type)
+        self.__ws.cell(row, col).fill = PatternFill(patternType=self.FILL_TYPE[type_index], fgColor=color.upper())
+
+    # 设置单元格颜色 by re
+    def setting_fill_color_by_re(self, row: int, col: int, re_pattern: re.Pattern, fill_type='solid'):
         content = self.__ws.cell(row, col).value
-        color = re_pattern.search(content)
+        search_result = re_pattern.search(content)
+        if not search_result:
+            return
+        color = search_result.groups()[1]
+        self.__ws.cell(row, col).value = re_pattern.sub('', content)
+        self.setting_fill_color(row, col, color, fill_type)
+
+    # 设置单元格颜色 by picker
+    def setting_fill_color_by_picker(self, row: int, col: int, color_picker: Callable[[Any], str], fill_type='solid'):
+        content = self.__ws.cell(row, col).value
+        # try:
+        #     num = float(content)
+        # except ValueError:
+        #     return
+        color = color_picker(content)
         if color:
-            self.__ws.cell(row, col).fill = PatternFill(patternType=excepted_type[type_index],
-                                                        fgColor=color.groups()[1])
-            self.__ws.cell(row, col).value = re_pattern.sub('', content)
+            self.setting_fill_color(row, col, color, fill_type)
 
     # 设置单元格文本字体
-    def setting_basic_font(self, row, col, name: str = None, size: int = None, bold: bool = None, color: str = None,
-                           italic: bool = None, strike: bool = None):
+    def setting_basic_font(self, row: int, col: int, name: str = None, size: int = None, bold: bool = None,
+                           color: str = None, italic: bool = None, strike: bool = None):
         font_new = copy(self.__ws.cell(row, col).font)
         if name:
             font_new.name = name

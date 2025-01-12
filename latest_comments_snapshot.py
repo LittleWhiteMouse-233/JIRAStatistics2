@@ -35,7 +35,7 @@ if __name__ == '__main__':
     # 单元格边框
     wsp.batch_set(wsp.setting_cell_border)
     # 单元格颜色
-    wsp.batch_set(wsp.setting_fill_color, col_list=['D'], re_pattern=re.compile(r'(<0x)([a-zA-Z0-9]{6})(>)'))
+    wsp.batch_set(wsp.setting_fill_color_by_re, col_list=['D'], re_pattern=re.compile(r'(<0x)([a-zA-Z0-9]{6})(>)'))
     # 单元格字体
     wsp.batch_set(wsp.setting_basic_font, col_list=['D'], bold=True, color='FFFFFF')
     # 输出表格
