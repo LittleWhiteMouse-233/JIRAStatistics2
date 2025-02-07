@@ -1,4 +1,5 @@
-from models import JIRALogin, IssueList, WorksheetProcessor, ConcatFilter
+from models import JIRALogin, IssueList, WorksheetShell, ConcatFilter
+from models import CellSetting as CPs
 from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
 import re
@@ -13,17 +14,17 @@ if __name__ == '__main__':
     worksheet = workbook.active
     for row_content in dataframe_to_rows(comments_table, index=False, header=False):
         worksheet.append(row_content)
-    wsp = WorksheetProcessor(worksheet)
+    wss = WorksheetShell(worksheet)
     # 纵向合并单元格
-    wsp.batch_merge_cells_vertical(col_list=['A', 'B', 'C'])
+    wss.batch_merge_cells_vertical(col_list=['A', 'B', 'C'])
     # 复制合并
-    wsp.copy_merge_cells_vertical('C', 'D')
+    wss.copy_merge_cells_vertical('C', 'D')
     # 水平居中，垂直居中
-    wsp.batch_set(wsp.setting_text_alignment, col_list=['A', 'B', 'D'], horizontal='center')
+    wss.batch_set(CPs.setting_text_alignment, col_list=['A', 'B', 'D'], horizontal='center')
     # 水平居左，垂直居中
-    wsp.batch_set(wsp.setting_text_alignment, col_list=['C', 'E'])
+    wss.batch_set(CPs.setting_text_alignment, col_list=['C', 'E'])
     # 列宽
-    wsp.batch_set_column_width({
+    wss.batch_set_column_width({
         'A': 20,
         'B': 30,
         'C': 40,
@@ -31,15 +32,15 @@ if __name__ == '__main__':
         'E': 100,
     })
     # 自动换行
-    wsp.batch_set(wsp.setting_word_wrap, col_list=['B', 'C', 'E'])
+    wss.batch_set(CPs.setting_word_wrap, col_list=['B', 'C', 'E'])
     # 单元格边框
-    wsp.batch_set(wsp.setting_cell_border)
+    wss.batch_set(CPs.setting_cell_border)
     # 单元格颜色
-    wsp.batch_set(wsp.setting_fill_color_by_re, col_list=['D'], re_pattern=re.compile(r'(<0x)([a-zA-Z0-9]{6})(>)'))
+    wss.batch_set(CPs.setting_fill_color_by_re, col_list=['D'], re_pattern=re.compile(r'(<0x)([a-zA-Z0-9]{6})(>)'))
     # 单元格字体
-    wsp.batch_set(wsp.setting_basic_font, col_list=['D'], bold=True, color='FFFFFF')
+    wss.batch_set(CPs.setting_basic_font, col_list=['D'], bold=True, color='FFFFFF')
     # 输出表格
-    workbook.worksheets[0] = wsp.worksheet
+    workbook.worksheets[0] = wss.worksheet
     filename = 'Comments snapshot at ' + time.asctime().replace(':', '-') + '.xlsx'
     filename = 'Comments snapshot.xlsx'
     workbook.save(filename)

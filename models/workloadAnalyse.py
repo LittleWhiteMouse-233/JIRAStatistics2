@@ -1,17 +1,17 @@
+import pandas as pd
+import numpy as np
+import warnings
+from enum import Enum
 from typing import Callable
 from openpyxl import load_workbook, Workbook
 from openpyxl.worksheet.worksheet import Worksheet
-import pandas as pd
-import numpy as np
-from matplotlib.colors import LinearSegmentedColormap
-from enum import Enum
 # from copy import deepcopy
+from .accessAgent import JIRAOperator
+from .workbookProcess import WorksheetProcessor, HeatmapRenderer, RCActivator
 from . import issueData as issueD
 from . import fieldStructure as fieldS
 from . import exceptions as exc
 from . import utils
-from .accessAgent import JIRAOperator
-from .workbookProcess import WorksheetProcessor
 
 
 class Workload:
@@ -87,21 +87,20 @@ class Workload:
 
 
 class ReferenceMap:
-    COLORMAP = LinearSegmentedColormap.from_list("custom", [(0, 1, 0), (1, 1, 0), (1, 0, 0)])
-
     def __init__(self, worksheet: Worksheet, origin_point_rc: tuple[int, int]):
         # 输入值为坐标重叠域右下交点的自然行列坐标，对应值域左上起点的零点行列坐标
         self.__origin_ws = worksheet
+        # 原点行坐标，原点列坐标
         self.__op_r, self.__op_c = origin_point_rc
-        ws = WorksheetProcessor(worksheet).copy_into(Workbook().active)
-        unmerged_sheet = WorksheetProcessor(ws).unmerge_cells_and_fill(fill=True)
+        ws = WorksheetProcessor.copy_into(worksheet, Workbook().active)
+        unmerged_sheet = WorksheetProcessor.unmerge_cells_and_fill(ws, fill=True)
         # unmerged_sheet = WorksheetProcessor(deepcopy(worksheet)).unmerge_cells_and_fill(fill=True)
         table = pd.DataFrame(unmerged_sheet.values)
         table.dropna(axis=0, how='all', inplace=True)
         table.dropna(axis=1, how='all', inplace=True)
         self.__value_map = self.__reset_rc(table.iloc[self.__op_r:, self.__op_c:])
-        self.__axis_x: pd.DataFrame = self.__reset_rc(table.iloc[:self.__op_r, self.__op_c:])
-        self.__axis_y: pd.DataFrame = self.__reset_rc(table.iloc[self.__op_r:, :self.__op_c])
+        self.__axis_x = self.__reset_rc(table.iloc[:self.__op_r, self.__op_c:])
+        self.__axis_y = self.__reset_rc(table.iloc[self.__op_r:, :self.__op_c])
 
     @staticmethod
     def __reset_rc(df: pd.DataFrame, row=True, col=True, row_drop=True, col_drop=True):
@@ -111,12 +110,14 @@ class ReferenceMap:
             df = df.T.reset_index(drop=col_drop).T
         return df
 
+    # 横轴层数
     @property
-    def __level_x(self):
+    def __ln_x(self):
         return self.__op_r
 
+    # 纵轴层数
     @property
-    def __level_y(self):
+    def __ln_y(self):
         return self.__op_c
 
     @property
@@ -127,14 +128,21 @@ class ReferenceMap:
     def worksheet_name(self):
         return self.__origin_ws.title
 
+    def __check_level_x(self, level_x: int):
+        if not 1 <= level_x <= self.__ln_x:
+            raise ValueError("The level_x(%d) is out of level-num range(1, %d)." % (level_x, self.__ln_x))
+
+    def __check_level_y(self, level_y: int):
+        if not 1 <= level_y <= self.__ln_y:
+            raise ValueError("The level_y(%d) is out of level-num range(1, %d)." % (level_y, self.__ln_y))
+
     def __locate_coord_value(self, value: str, level: int, axis: int):
+        # level: belong to N*
         if axis == 0:
-            if level > self.__level_x:
-                raise ValueError("The level(%d) is over than level-num of x axis(%d)." % (level, self.__level_x))
+            self.__check_level_x(level)
             return self.__axis_x.iloc[level - 1, :].eq(value)
         elif axis == 1:
-            if level > self.__level_y:
-                raise ValueError("The level(%d) is over than level-num of y axis(%d)." % (level, self.__level_y))
+            self.__check_level_y(level)
             return self.__axis_y.iloc[:, level - 1].eq(value)
         else:
             raise ValueError("The axis should be 0 or 1, but get %d." % axis)
@@ -142,10 +150,10 @@ class ReferenceMap:
     def __locate_multilayer_coord(self, coord_list: list[str], axis: int, auto_adapt=False):
         if auto_adapt:
             coord_list = self.__auto_adapt_coord_list(coord_list, axis)
-        level_xy = (self.__level_x, self.__level_y)
-        if len(coord_list) != level_xy[axis]:
+        xy_ln = (self.__ln_x, self.__ln_y)
+        if len(coord_list) != xy_ln[axis]:
             raise ValueError("The length of coord_list: %d is different from the level-num of axis(%d): %d."
-                             % (len(coord_list), axis, level_xy[axis]))
+                             % (len(coord_list), axis, xy_ln[axis]))
         bool_index = pd.Series([True] * self.value_shape[int(not bool(axis))])
         for i, coord in enumerate(coord_list):
             if coord is None:
@@ -161,7 +169,7 @@ class ReferenceMap:
             if coord_list[i] is not None:
                 break
         ata_coord_list = coord_list[:i + 1]
-        level_length = (self.__level_x, self.__level_y)[axis]
+        level_length = (self.__ln_x, self.__ln_y)[axis]
         return [None] * (level_length - len(ata_coord_list)) + ata_coord_list
 
     def locate_coord_cell(self, row_coordinates: list[str], col_coordinates: list[str]):
@@ -186,32 +194,126 @@ class ReferenceMap:
     def cell2index(located: pd.DataFrame):
         return int(located.index[0]), int(located.columns[0])
 
-    @classmethod
-    def __color_picker(cls, scale: float):
-        r, g, b, _ = cls.COLORMAP(scale, bytes=True)
-        return '%06x' % ((int(r) << 16) + (int(g) << 8) + int(b))
-
-    def value_array2sheet(self, value_array: np.ndarray):
+    def value_array2sheet(self, value_array: np.ndarray, heatmap=True):
+        # 数组的行列数应该与参考表的数据矩阵的行列数一致
         if value_array.shape != self.value_shape:
-            raise ValueError("The shape of value_array(%s) is wrong, it shall be: %s)."
+            raise ValueError("The shape of value_array(%s) is wrong, it shall be the same as ref_map: %s)."
                              % value_array.shape, self.value_shape)
-        max_value = value_array.max()
-        min_value = value_array.min()
-        worksheet = WorksheetProcessor(self.__origin_ws).copy_into(Workbook().active)
-        renderer = WorksheetProcessor(worksheet)
-        row, col = value_array.shape
-        for i in range(row):
-            for j in range(col):
+        worksheet = WorksheetProcessor.copy_into(self.__origin_ws, Workbook().active)
+        # 渲染器
+        renderer = HeatmapRenderer(worksheet, value_array.max(), value_array.min()) if heatmap else None
+        for i in range(value_array.shape[0]):
+            for j in range(value_array.shape[1]):
                 value = value_array[i][j]
-                if value == 0:
-                    # value = ''
-                    color = 'D0D0D0'
+                ws_i = self.__ln_x + i + 1
+                ws_j = self.__ln_y + j + 1
+                # 热力图
+                if heatmap:
+                    renderer.colorful_value(ws_i, ws_j, value)
                 else:
-                    color = self.__color_picker((value - min_value) / (max_value - min_value))
-                ws_i = i + self.__level_x + 1
-                ws_j = j + self.__level_y + 1
-                worksheet.cell(ws_i, ws_j).value = value
-                renderer.setting_fill_color(ws_i, ws_j, color)
+                    worksheet.cell(ws_i, ws_j).value = value
+        return worksheet
+
+    def value_array2downmix_sheet(self, value_array: np.ndarray, level_x: int = None, level_y: int = None,
+                                  heatmap=True):
+        # level_x, level_y: belong to N*
+        if level_x is None and level_y is None:
+            warnings.warn("If you want a sheet with the same shape as the ref_map, use value_array2sheet().",
+                          RuntimeWarning)
+            return self.value_array2sheet(value_array, heatmap=heatmap)
+        # 数组的行列数应该与参考表的数据矩阵的行列数一致
+        if value_array.shape != self.value_shape:
+            raise ValueError("The shape of value_array(%s) is wrong, it shall be the same as ref_map: %s)."
+                             % value_array.shape, self.value_shape)
+
+        def downmix(array: np.ndarray, axis_series: pd.Series, axis: int):
+            assert axis == 0 or axis == 1
+            assert axis_series.size == array.shape[-(axis + 1)]
+            concat_list = []
+            dm_axis = [axis_series[0]]
+            start = 0
+            flag = False
+            for end in range(1, axis_series.size + 1):
+                if end == axis_series.size:
+                    flag = True
+                else:
+                    coord = axis_series[end]
+                    if coord != dm_axis[-1]:
+                        dm_axis.append(coord)
+                        flag = True
+                if flag:
+                    assert end > start
+                    if axis == 0:
+                        concat_list.append(array[:][start:end].sum(axis=1))
+                    else:
+                        concat_list.append(array[start:end][:].sum(axis=0))
+                    start = end
+                    flag = False
+            assert len(concat_list) == len(dm_axis)
+            if axis == 0:
+                return np.vstack(concat_list).T, pd.DataFrame(dm_axis).T
+            else:
+                return np.vstack(concat_list), pd.DataFrame(dm_axis)
+
+        if level_x is not None:
+            self.__check_level_x(level_x)
+            downmix_x, axis_x = downmix(value_array, self.__axis_x.iloc[level_x - 1, :], axis=0)
+        else:
+            downmix_x = value_array
+            axis_x = self.__axis_x
+        if level_y is not None:
+            self.__check_level_y(level_y)
+            downmix_xy, axis_y = downmix(downmix_x, self.__axis_y.iloc[:, level_y - 1], axis=1)
+        else:
+            downmix_xy = downmix_x
+            axis_y = self.__axis_y
+        op_r, op_c = axis_x.shape[0], axis_y.shape[1]
+        worksheet = Workbook().active
+        # 填充横坐标域
+        if level_x is not None:
+            for i in range(axis_x.shape[0]):
+                for j in range(axis_x.shape[1]):
+                    worksheet.cell(i + 1, op_c + j + 1).value = axis_x.iloc[i, j]
+        else:
+            # 复制原表的横坐标域
+            WorksheetProcessor.copy_part_into(self.__origin_ws, worksheet,
+                                              RCActivator.scope_int2str(1,
+                                                                        self.__op_c + 1,
+                                                                        self.__op_r,
+                                                                        self.__op_c + self.__axis_x.shape[1]),
+                                              RCActivator.point_int2str(1, op_c + 1))
+        # 填充纵坐标域
+        if level_y is not None:
+            for i in range(axis_y.shape[0]):
+                for j in range(axis_y.shape[1]):
+                    worksheet.cell(op_r + i + 1, j + 1).value = axis_y.iloc[i, j]
+        else:
+            # 复制原表的纵坐标域
+            WorksheetProcessor.copy_part_into(self.__origin_ws, worksheet,
+                                              RCActivator.scope_int2str(self.__op_r + 1,
+                                                                        1,
+                                                                        self.__op_r + self.__axis_y.shape[0],
+                                                                        self.__op_c),
+                                              RCActivator.point_int2str(op_r + 1, 1))
+        # 补充表头域
+        if level_x is None and level_y is not None:
+            # 复制压缩列对应的表头域
+            WorksheetProcessor.copy_part_into(self.__origin_ws, worksheet,
+                                              RCActivator.scope_int2str(1,
+                                                                        level_y,
+                                                                        self.__op_r,
+                                                                        level_y),
+                                              RCActivator.point_int2str(1, 1))
+        # 填充值域
+        renderer = HeatmapRenderer(worksheet, value_array.max(), value_array.min()) if heatmap else None
+        for i in range(downmix_xy.shape[0]):
+            for j in range(downmix_xy.shape[1]):
+                ws_i, ws_j = op_r + i + 1, op_c + j + 1
+                value = downmix_xy[i][j]
+                if heatmap:
+                    renderer.colorful_value(ws_i, ws_j, value)
+                else:
+                    worksheet.cell(ws_i, ws_j).value = value
         return worksheet
 
 
@@ -261,7 +363,7 @@ class Cell:
         elif unit == 'hour':
             return sum(map(lambda x: x.person_hour, self.__workloads))
         else:
-            raise ValueError("Wrong unit: %s." % unit)
+            raise ValueError("Unknown unit: %s." % unit)
 
     def refer_from(self, ref_map: ReferenceMap):
         if ref_map is self.__ref_map or ref_map.worksheet_name == self.__ref_map.worksheet_name:
@@ -452,7 +554,7 @@ class Matrix:
         print('Total: %d' % len(self.__meta_datas), end=', ')
         print(', '.join(map(lambda x: '%s: %d' % (x.res_name, self.__num_of(x)), self.LoadResult)) + '\n')
 
-    def __build_matrix_base_on(self, ref_map: ReferenceMap, cell_property: Callable[[Cell], int | float]):
+    def __build_matrix(self, ref_map: ReferenceMap, cell_property: Callable[[Cell], int | float]):
         array = np.zeros(ref_map.value_shape)
         for cell in self.__cells:
             if not cell.refer_from(ref_map):
@@ -461,38 +563,62 @@ class Matrix:
             array[row_index][col_index] = cell_property(cell)
         return array
 
-    def __synthesize_count_sheet(self, ref_map: ReferenceMap):
-        value_array = self.__build_matrix_base_on(ref_map, lambda x: x.num_issues)
-        count_ws = ref_map.value_array2sheet(value_array)
-        count_ws.cell(1, 1).value = "Count of %s" % ref_map.worksheet_name
-        return count_ws
+    def __synthesize_sheet(self, ref_map: ReferenceMap, cell_property: Callable[[Cell], int | float], head='{}'):
+        value_array = self.__build_matrix(ref_map, cell_property)
+        worksheet = ref_map.value_array2sheet(value_array)
+        worksheet.cell(1, 1).value = head.format(ref_map.worksheet_name)
+        return worksheet
 
-    def __synthesize_workload_sheet(self, ref_map: ReferenceMap, unit='day'):
-        value_array = self.__build_matrix_base_on(ref_map, lambda x: x.cumulative_workload(unit=unit))
-        workload_ws = ref_map.value_array2sheet(value_array)
-        workload_ws.cell(1, 1).value = "Cumulative workload of %s(person·%s)" % (ref_map.worksheet_name, unit)
-        return workload_ws
+    def __downmix_sheet(self, ref_map: ReferenceMap, downmix_x: int | None, downmix_y: int | None,
+                        cell_property: Callable[[Cell], int | float], head='{}'):
+        value_array = self.__build_matrix(ref_map, cell_property)
+        worksheet = ref_map.value_array2downmix_sheet(value_array, downmix_x, downmix_y)
+        worksheet.cell(1, 1).value = (head.format(ref_map.worksheet_name)
+                                      + ' downmix by (%s, %s)' % (downmix_x, downmix_y))
+        return worksheet
 
     def export_matrix_workbook(self):
+        unit = 'day'
+
+        def cell_count(cell: Cell):
+            return cell.num_issues
+
+        def cell_workload(cell: Cell):
+            return cell.cumulative_workload(unit=unit)
+
+        count_head = r"Count of {}"
+        workload_head = r"Cumulative workload of {}(person·%s)" % unit
         print("Exporting matrix workbook ...")
         workbook = Workbook()
         worksheet = workbook.active
-        worksheet.title = 'Count of Test'
         # 测试计数
         print("Building count matrix and synthesizing with ref_test style ...")
-        test_count = self.__synthesize_count_sheet(self.__ref_test)
-        WorksheetProcessor(test_count).copy_into(worksheet)
+        test_count = self.__synthesize_sheet(self.__ref_test, cell_count, count_head)
+        WorksheetProcessor.copy_into(test_count, worksheet)
+        worksheet.title = 'Count of Test'
+        # 测试计数压缩
+        print("Building DOWNMIX count matrix base on ref_test ...")
+        test_count_dm = self.__downmix_sheet(self.__ref_test, None, 1, cell_count, count_head)
+        WorksheetProcessor.copy_into(test_count_dm, workbook.create_sheet('Count of Test(DOWNMIX)'))
         # 测试计时
         print("Building workload matrix and synthesizing with ref_test style ...")
-        test_workload = self.__synthesize_workload_sheet(self.__ref_test)
-        WorksheetProcessor(test_workload).copy_into(workbook.create_sheet('Time of Test'))
+        test_workload = self.__synthesize_sheet(self.__ref_test, cell_workload, workload_head)
+        WorksheetProcessor.copy_into(test_workload, workbook.create_sheet('Time of Test'))
+        # 测试计时压缩
+        print("Building DOWNMIX workload matrix base on ref_test ...")
+        test_workload_dm = self.__downmix_sheet(self.__ref_test, None, 1, cell_workload, workload_head)
+        WorksheetProcessor.copy_into(test_workload_dm, workbook.create_sheet('Time of Test(DOWNMIX)'))
         # 管理计数
         print("Building count matrix and synthesizing with ref_manage style ...")
-        manage_count = self.__synthesize_count_sheet(self.__ref_manage)
-        WorksheetProcessor(manage_count).copy_into(workbook.create_sheet('Count of Manage'))
+        manage_count = self.__synthesize_sheet(self.__ref_manage, cell_count, count_head)
+        WorksheetProcessor.copy_into(manage_count, workbook.create_sheet('Count of Manage'))
+        # 管理计数压缩
+        pass
         # 管理计时
         print("Building workload matrix and synthesizing with ref_manage style ...")
-        manage_workload = self.__synthesize_workload_sheet(self.__ref_manage)
-        WorksheetProcessor(manage_workload).copy_into(workbook.create_sheet('Time of Manage'))
+        manage_workload = self.__synthesize_sheet(self.__ref_manage, cell_workload, workload_head)
+        WorksheetProcessor.copy_into(manage_workload, workbook.create_sheet('Time of Manage'))
         print("Exporting matrix workbook completed\n")
+        # 管理计时压缩
+        pass
         return workbook

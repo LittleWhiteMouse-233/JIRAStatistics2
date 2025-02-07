@@ -1,4 +1,4 @@
-from models import JIRALogin, IssueList, BaseFilter, JIRAOperator, Matrix, WorksheetProcessor
+from models import JIRALogin, IssueList, BaseFilter, JIRAOperator, Matrix, WorksheetShell
 from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
 
@@ -9,7 +9,7 @@ def export_worklog_workbook(wm: Matrix):
     worksheet = workbook.active
     for row_content in dataframe_to_rows(df, index=False, header=True):
         worksheet.append(row_content)
-    WorksheetProcessor(worksheet).batch_set_column_width({
+    WorksheetShell(worksheet).batch_set_column_width({
         'A': 60,
         'B': 40,
         'C': 40,
@@ -30,4 +30,6 @@ if __name__ == '__main__':
     export_worklog_workbook(workload_matrix)
     print(jira_op.call_num_log, '\n')
     wb = workload_matrix.export_matrix_workbook()
-    wb.save('Matrix.xlsx')
+    filename = 'MatrixAggregation.xlsx'
+    wb.save(filename)
+    print('Matrix Aggregation save as: %s' % filename)
