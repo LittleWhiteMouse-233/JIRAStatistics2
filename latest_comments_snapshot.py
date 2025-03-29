@@ -1,5 +1,5 @@
-from models import JIRALogin, IssueList, WorksheetShell, ConcatFilter
-from models import CellSetting as CPs
+from models import JIRALogin, IssueList, ConcatFilter, WorksheetShell
+from models import CellSetting as CSt
 from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
 import re
@@ -20,9 +20,9 @@ if __name__ == '__main__':
     # 复制合并
     wss.copy_merge_cells_vertical('C', 'D')
     # 水平居中，垂直居中
-    wss.batch_set(CPs.setting_text_alignment, col_list=['A', 'B', 'D'], horizontal='center')
+    wss.batch_set(CSt.setting_text_alignment, col_list=['A', 'B', 'D'], horizontal='center')
     # 水平居左，垂直居中
-    wss.batch_set(CPs.setting_text_alignment, col_list=['C', 'E'])
+    wss.batch_set(CSt.setting_text_alignment, col_list=['C', 'E'])
     # 列宽
     wss.batch_set_column_width({
         'A': 20,
@@ -32,16 +32,16 @@ if __name__ == '__main__':
         'E': 100,
     })
     # 自动换行
-    wss.batch_set(CPs.setting_word_wrap, col_list=['B', 'C', 'E'])
+    wss.batch_set(CSt.setting_word_wrap, col_list=['B', 'C', 'E'])
     # 单元格边框
-    wss.batch_set(CPs.setting_cell_border)
+    wss.batch_set(CSt.setting_cell_border)
     # 单元格颜色
-    wss.batch_set(CPs.setting_fill_color_by_re, col_list=['D'], re_pattern=re.compile(r'(<0x)([a-zA-Z0-9]{6})(>)'))
+    wss.batch_set(CSt.setting_fill_color_by_re, col_list=['D'], re_pattern=re.compile(r'(<0x)([a-zA-Z0-9]{6})(>)'))
     # 单元格字体
-    wss.batch_set(CPs.setting_basic_font, col_list=['D'], bold=True, color='FFFFFF')
+    wss.batch_set(CSt.setting_basic_font, col_list=['D'], bold=True, color='FFFFFF')
     # 输出表格
     workbook.worksheets[0] = wss.worksheet
     filename = 'Comments snapshot at ' + time.asctime().replace(':', '-') + '.xlsx'
-    filename = 'Comments snapshot.xlsx'
+    # filename = 'Comments snapshot.xlsx'
     workbook.save(filename)
     print("Workbook saved as: %s." % filename)

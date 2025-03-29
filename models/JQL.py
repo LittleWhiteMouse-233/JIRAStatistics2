@@ -37,9 +37,18 @@ class BaseFilter(JQLFilter, Enum):
         r"project in (DTCER, PARCER, VODCER) AND issuetype in (认证测试任务, 认证管理任务, Sub-task)"
     )
 
+    ALL_TASK_LIKE_GOOGLE = (
+        r"谷歌所有任务和子任务",
+        r"project in (GTVS) AND issuetype in (认证测试任务, 认证管理任务, Sub-task)"
+    )
+
 
 class ConcatFilter(JQLFilter, Enum):
     EPIC_COMMENT = (
         r"Epic 评论",
         or_(BaseFilter.RECENTLY_RESOLVED_EPIC, BaseFilter.UNRESOLVED_EPIC)
+    )
+    ALL_TASK_LIKE = (
+        r"所有任务和子任务",
+        or_(BaseFilter.ALL_TASK_LIKE, BaseFilter.ALL_TASK_LIKE_GOOGLE)
     )

@@ -472,6 +472,9 @@ class HeatmapRenderer(WorksheetShell):
             return self.__0m
         return value
 
-    def colorful_value(self, row: int, col: int, value: Any):
+    def colorful_value(self, row: int, col: int, value: Any, color: str = None):
         self.worksheet.cell(row, col).value = self.__mask_value(value)
-        CellSetting.setting_fill_color(self.worksheet, row, col, self.__linear_color(value))
+        if color is not None:
+            CellSetting.setting_fill_color(self.worksheet, row, col, color)
+        else:
+            CellSetting.setting_fill_color(self.worksheet, row, col, self.__linear_color(value))

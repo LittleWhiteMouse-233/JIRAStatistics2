@@ -4,8 +4,8 @@ import pandas as pd
 from datetime import datetime
 from typing import Callable, Any, TypeVar
 from . import fieldStructure as fieldsS
-from . import exceptions as exc
-from . import utils
+from .support import exceptions as exc, utils
+from .component import CoordinateCache
 
 _F = TypeVar('_F')
 
@@ -44,6 +44,9 @@ class Issue(IssueLike):
         # 时间类字段
         self.created_timestring = issue_obj.get_field('created')
         self.updated_timestring = issue_obj.get_field('updated')
+        # 完成情况
+        self.resolution = issue_obj.fields.resolution
+        self.resolution_timestring = issue_obj.get_field('resolutiondate')
         # 标签类字段
         self.labels = fields_obj.labels
         self.components: list[fieldsS.Component] = []
@@ -213,7 +216,7 @@ class TaskLike(ABC, Issue):
         self.parent = None
 
     @abstractmethod
-    def generate_coordinate(self, epic: Issue, *, task: Issue = None):
+    def generate_coordinate(self, epic: Issue, *, task: Issue = None) -> CoordinateCache:
         pass
 
     @property
@@ -240,43 +243,75 @@ class Task(TaskLike):
 
     def generate_coordinate(self, epic: Epic, task: TaskLike = None):
         self.verify(epic, task)
-        r1 = epic.epic_name
-        r2 = None
-        c1 = '无标定任务'
-        c2 = None
-        return r1, r2, c1, c2
+        # r1 = epic.epic_name
+        # r2 = None
+        # c1 = '无标定任务'
+        # c2 = None
+        # return r1, r2, c1, c2
+        coord_cache = CoordinateCache()
+        coord_cache.add_multi_row_coord(
+            epic.epic_name,
+            None,
+        )
+        coord_cache.add_multi_col_coord(
+            '无标定任务',
+            None,
+        )
+        return coord_cache
 
 
 # 认证测试任务
 class TestTask(Task):
     def generate_coordinate(self, epic: Epic, task: Task = None):
         self.verify(epic, task)
+        coord_cache = CoordinateCache()
         if epic.certification is None:
             raise exc.InvalidFieldError('certification')
-        r1 = epic.certification.child.value
+        # r1 = epic.certification.child.value
+        coord_cache.add_row_coord(epic.certification.child.value)
         if not self.components:
             raise exc.InvalidFieldError('components')
-        r2 = self.components_tuple
+        # r2 = self.components_tuple
+        coord_cache.add_row_coord(self.components_tuple)
         if self.task_type is None:
             raise exc.InvalidFieldError('task_type')
-        c1 = self.task_type.parent.value
-        c2 = self.task_type.child.value
-        return r1, r2, c1, c2
+        # c1 = self.task_type.parent.value
+        # c2 = self.task_type.child.value
+        coord_cache.add_multi_col_coord(
+            self.task_type.parent.value,
+            self.task_type.child.value,
+        )
+        # return r1, r2, c1, c2
+        return coord_cache
 
 
 # 认证管理任务
 class ManageTask(Task):
     def generate_coordinate(self, epic: Epic, task: Task = None):
         self.verify(epic, task)
+        coord_cache = CoordinateCache()
         if epic.certification is None:
             raise exc.InvalidFieldError('certification')
-        r1 = epic.certification.child.value
+        # r1 = {
+        #     '认证项': epic.certification.child.value,
+        #     '认证大类': epic.certification.parent.value,
+        # }
+        coord_cache.add_row_coord({
+            '认证项': epic.certification.child.value,
+            '认证大类': epic.certification.parent.value,
+        })
         if not self.components:
             raise exc.InvalidFieldError('components')
-        r2 = self.components_tuple
-        c1 = "认证管理"
-        c2 = None
-        return r1, r2, c1, c2
+        # r2 = self.components_tuple
+        coord_cache.add_row_coord(self.components_tuple)
+        # c1 = "认证管理"
+        # c2 = None
+        coord_cache.add_multi_col_coord(
+            '认证管理',
+            None,
+        )
+        # return r1, r2, c1, c2
+        return coord_cache
 
 
 # 子任务型事务
@@ -287,40 +322,70 @@ class Subtask(TaskLike):
         self.parent = IssueLike(issue_obj.get_field('parent'))
 
     def __gen_coord_as_test(self, epic: Epic, task: Task):
+        coord_cache = CoordinateCache()
         if epic.certification is None:
             raise exc.InvalidFieldError('certification')
-        r1 = epic.certification.child.value
+        # r1 = epic.certification.child.value
+        coord_cache.add_row_coord(epic.certification.child.value)
         if not self.components:
             raise exc.InvalidFieldError('components')
-        r2 = self.components_tuple
+        # r2 = self.components_tuple
+        coord_cache.add_row_coord(self.components_tuple)
         if self.task_type is not None:
-            c1 = self.task_type.parent.value
-            c2 = self.task_type.child.value
+            # c1 = self.task_type.parent.value
+            # c2 = self.task_type.child.value
+            coord_cache.add_multi_col_coord(
+                self.task_type.parent.value,
+                self.task_type.child.value,
+            )
         elif task is not None and task.task_type is not None:
-            c1 = task.task_type.parent.value
-            c2 = task.task_type.child.value
+            # c1 = task.task_type.parent.value
+            # c2 = task.task_type.child.value
+            coord_cache.add_multi_col_coord(
+                task.task_type.parent.value,
+                task.task_type.child.value,
+            )
         else:
             raise exc.InvalidFieldError('task_type')
-        return r1, r2, c1, c2
+        # return r1, r2, c1, c2
+        return coord_cache
 
     def __gen_coord_as_manage(self, epic: Epic):
+        coord_cache = CoordinateCache()
         if epic.certification is None:
             raise exc.InvalidFieldError('certification')
-        r1 = epic.certification.child.value
+        # r1 = epic.certification.child.value
+        coord_cache.add_row_coord(epic.certification.child.value)
         if not self.components:
             raise exc.InvalidFieldError('components')
-        r2 = self.components_tuple
-        c1 = '认证管理'
-        c2 = None
-        return r1, r2, c1, c2
+        # r2 = self.components_tuple
+        coord_cache.add_row_coord(self.components_tuple)
+        # c1 = '认证管理'
+        # c2 = None
+        coord_cache.add_multi_col_coord(
+            '认证管理',
+            None,
+        )
+        # return r1, r2, c1, c2
+        return coord_cache
 
     @staticmethod
     def __gen_coord_as_public(epic: Epic):
-        r1 = epic.epic_name
-        r2 = None
-        c1 = '无标定子任务'
-        c2 = None
-        return r1, r2, c1, c2
+        # r1 = epic.epic_name
+        # r2 = None
+        # c1 = '无标定子任务'
+        # c2 = None
+        # return r1, r2, c1, c2
+        coord_cache = CoordinateCache()
+        coord_cache.add_multi_row_coord(
+            epic.epic_name,
+            None,
+        )
+        coord_cache.add_multi_col_coord(
+            '无标定子任务',
+            None,
+        )
+        return coord_cache
 
     def verify(self, epic: Epic, task: Task):
         if task is None:

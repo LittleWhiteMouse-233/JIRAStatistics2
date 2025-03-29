@@ -1,7 +1,7 @@
 import jira.resources as jira_res
 from typing import Any
 from dataclasses import dataclass
-from . import utils
+from .support import utils
 
 
 @dataclass(slots=True, frozen=True)
@@ -104,6 +104,24 @@ class User:
             emailAddress=user_obj.emailAddress,
         )
 
+    @classmethod
+    def init_default(cls):
+        return cls(
+            displayName='auto',
+            key='auto',
+            accountName='auto',
+            emailAddress='',
+        )
+
+    @classmethod
+    def init_group_item(cls, member_dict:dict[str, ...]):
+        return cls(
+            displayName=member_dict['fullname'],
+            key=member_dict[''],
+            accountName=member_dict['name'],
+            emailAddress=member_dict['email'],
+        )
+
 
 @dataclass(slots=True, frozen=True)
 class Comment:
@@ -189,4 +207,19 @@ class Component:
         return cls(
             id=components_obj.id,
             name=components_obj.name,
+        )
+
+
+@dataclass(slots=True, frozen=True)
+class Resolution:
+    id: str
+    name: str
+    description: str
+
+    @classmethod
+    def init_obj(cls, resolution_obj: jira_res.Resolution):
+        return cls(
+            id=resolution_obj.id,
+            name=resolution_obj.name,
+            description=resolution_obj.description
         )

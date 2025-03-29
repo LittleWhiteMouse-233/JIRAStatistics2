@@ -1,4 +1,4 @@
-from models import JIRALogin, IssueList, BaseFilter, JIRAOperator, Matrix, WorksheetShell
+from models import JIRALogin, IssueList, ConcatFilter, JIRAOperator, Matrix, WorksheetShell
 from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
 
@@ -20,16 +20,23 @@ def export_worklog_workbook(wm: Matrix):
     print('Worklog table save as %s.' % filename)
 
 
+def export_matrix_workbook(wm: Matrix):
+    workbook = wm.export_matrix_workbook()
+    filename = 'MatrixAggregation.xlsx'
+    workbook.save(filename)
+    print('Matrix Aggregation save as: %s' % filename)
+
+
 if __name__ == '__main__':
     jira_agent = JIRALogin.used_token(r'access_token.txt')
     issue_list = IssueList(jira_agent.get_fields())
-    issue_list.import_issues(jira_agent.search_by_jql_filter(BaseFilter.ALL_TASK_LIKE))
+    # issue_list.import_issues(jira_agent.search_by_jql_filter(BaseFilter.ALL_TASK_LIKE))
+    # issue_list.import_issues(jira_agent.search_by_jql_filter(BaseFilter.ALL_TASK_LIKE_GOOGLE))
+    issue_list.import_issues(jira_agent.search_by_jql_filter(ConcatFilter.ALL_TASK_LIKE))
     jira_op = JIRAOperator(jira_agent)
-    workload_matrix = Matrix(issue_list, jira_op, '2024年标准工时时间表.xlsx')
-    workload_matrix.meta_data_loading_report()
+    workload_matrix = Matrix(issue_list, jira_op, '2025年标准工时时间表.xlsx')
+    load_report = workload_matrix.meta_data_loading_report()
+    load_report.to_excel('LoadingReport.xlsx', header=True, index=False)
     export_worklog_workbook(workload_matrix)
     print(jira_op.call_num_log, '\n')
-    wb = workload_matrix.export_matrix_workbook()
-    filename = 'MatrixAggregation.xlsx'
-    wb.save(filename)
-    print('Matrix Aggregation save as: %s' % filename)
+    export_matrix_workbook(workload_matrix)

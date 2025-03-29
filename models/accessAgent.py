@@ -1,9 +1,10 @@
 from jira import JIRA, JIRAError
 import os
+from typing import Any
 from . import fieldStructure as fieldsS
 from . import issueData as issueD
 from .JQL import JQLFilter
-from . import exceptions as exc
+from .support import exceptions as exc
 
 
 class JIRALogin:
@@ -21,7 +22,8 @@ class JIRALogin:
     @classmethod
     def used_token(cls, access_token_resource: str = None):
         if access_token_resource is None:
-            access_token_resource = input("access_token string or access_token filepath: ")
+            access_token_resource = input(
+                "access_token string or access_token filepath(input N/n use username&password):")
         if os.path.exists(access_token_resource):
             access_token = open(access_token_resource, 'r').readline()
         else:
@@ -45,6 +47,25 @@ class JIRAAgency:
 
     def get_single_issue(self, key_or_id: str):
         return self.__jira.issue(key_or_id)
+
+    def create_issue(self, issue_data: dict[str, Any]):
+        return self.__jira.create_issue(issue_data)
+
+    def create_issues(self, issues_data: list[dict[str, Any]]):
+        return self.__jira.create_issues(issues_data)
+
+    def add_attachment(self, issue_id: str | int, filepath: str):
+        self.__jira.add_attachment(issue_id, attachment=filepath)
+
+    def add_comment(self, issue_id: str | int, content: str):
+        self.__jira.add_comment(issue_id, body=content)
+
+    def update_comment(self, issue_id: str | int, comment_index: int, content: str):
+        comment_list = self.__jira.comments(issue_id)
+        comment_list[comment_index].update(body=content)
+
+    def update_latest_comment(self, issue_id: str | int, content: str):
+        self.update_comment(issue_id, -1, content)
 
 
 class JIRAOperator:
